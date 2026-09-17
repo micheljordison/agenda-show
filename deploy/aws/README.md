@@ -9,15 +9,15 @@ O deploy é feito diretamente em uma EC2 Linux: clonar o repositório, configura
 - `/api` servido no mesmo domínio do frontend; suporte a acesso direto às rotas da SPA.
 - Validação das configurações de produção, documentação da API desabilitada e migrations/bootstrap separados do início do servidor.
 - Reinício automático, verificações de saúde e rotação dos logs Docker.
-- Complementos opcionais para PostgreSQL persistente na EC2 e HTTPS com Caddy.
+- PostgreSQL no Docker na mesma EC2, com volume persistente; HTTPS opcional com Caddy.
 
 O Compose original continua sendo de desenvolvimento. Não combine `docker-compose.yml` com os arquivos de produção.
 
 ## 1. Preparar a EC2
 
-Instalar Git, Docker Engine e o plugin Docker Compose v2. Habilitar o serviço Docker no boot e reservar espaço em disco para builds, imagens, logs e banco, se local. O build do frontend consome memória além daquela usada pela aplicação em execução; dimensionar a instância conforme medições da carga.
+Instalar Git, Docker Engine e o plugin Docker Compose v2. Habilitar o serviço Docker no boot e reservar espaço em disco para builds, imagens, logs e banco local. O build do frontend consome memória além daquela usada pela aplicação em execução; dimensionar a instância conforme medições da carga.
 
-Para o HTTPS opcional incluído, apontar o domínio para o IP público estável da EC2 e liberar portas TCP 80/443 no security group. Restringir SSH 22 ao IP administrativo ou usar SSM. Não liberar 4050, 4080, 4100 ou 5432 para a Internet. A porta 8080 fica vinculada somente a localhost por padrão.
+Para o HTTPS opcional incluído, apontar o domínio para o IP público estável da EC2 e liberar portas TCP 80/443 no security group. Restringir SSH 22 ao IP administrativo ou usar SSM. Não liberar 4050, 4080, 4100 ou 5432 para a Internet. O exemplo de ambiente publica HTTP em 0.0.0.0:8080. Liberar TCP 8080 no security group apenas para os clientes desejados; acessar http://IP_DA_EC2:8080. HTTPS não é necessário para iniciar este ambiente.
 
 O Caddy precisa alcançar a Internet para emissão/renovação dos certificados. Se já existe proxy HTTPS ou ALB, omitir o complemento HTTPS e encaminhar tráfego ao frontend na porta 8080. Para ALB externo à máquina, definir `HTTP_BIND_ADDRESS=0.0.0.0` e permitir 8080 somente a partir do security group do ALB.
 
@@ -36,38 +36,32 @@ Editar `.env.production` antes de continuar:
 
 - Manter `COMPOSE_PROJECT_NAME=agenda-production` entre releases: isso mantém a identidade dos volumes.
 - Definir `JWT_SECRET_KEY` aleatória com pelo menos 32 caracteres e `INITIAL_MASTER_PASSWORD` aleatória com pelo menos 16. Por exemplo, gerar cada segredo separadamente com `openssl rand -hex 32`.
-- Definir `APP_DOMAIN` com o hostname real, sem protocolo ou caminho, para o Caddy.
+- `APP_DOMAIN` só é usado caso o complemento HTTPS seja habilitado futuramente.
 - Manter `BACKEND_CORS_ORIGINS` vazio para frontend e API no mesmo domínio.
-- Escolher a conexão PostgreSQL abaixo. Nunca versionar `.env.production`.
+- Definir as credenciais PostgreSQL abaixo. Nunca versionar `.env.production`.
 
 ### PostgreSQL na própria EC2
 
-Usar `docker-compose.postgres.yml`, definir `POSTGRES_USER`, `POSTGRES_PASSWORD` e `POSTGRES_DB`, e ajustar a URL com os mesmos valores:
+O PostgreSQL já está incluído em `docker-compose.production.yml`. Definir apenas `POSTGRES_USER`, `POSTGRES_PASSWORD` e `POSTGRES_DB` no ambiente. O Compose monta a URL automaticamente, usando `database` como endereço interno; não configurar `DATABASE_URL` no `.env.production`:
 
 ```dotenv
-DATABASE_URL=postgresql+psycopg://agenda:SENHA@database:5432/agenda?connect_timeout=5
+DATABASE_URL=postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}?connect_timeout=5
 ```
 
 Senha hexadecimal aleatória evita caracteres especiais na URL. Outras senhas exigem codificação URL na `DATABASE_URL`, mas o valor original em `POSTGRES_PASSWORD`. O banco fica sem porta no host e persiste no volume `production_postgres_data`. Mudar as variáveis `POSTGRES_*` não altera credenciais de um volume já inicializado: a rotação deve ser feita também no PostgreSQL.
 
-### PostgreSQL externo/RDS
-
-Omitir `docker-compose.postgres.yml`. Configurar `DATABASE_URL` para o endpoint privado e usar TLS, como no exemplo de ambiente. O RDS deve aceitar 5432 somente a partir da EC2. `sslmode=require` cifra a conexão; para validar a identidade do servidor, montar o bundle CA do RDS e configurar `sslmode=verify-full&sslrootcert=/caminho/ca.pem`. Ativar backups, criptografia e proteção contra exclusão no RDS.
-
 ## 3. Selecionar os arquivos Compose
 
-Executar na raiz do repositório, usando Bash. A função abaixo usa PostgreSQL e HTTPS locais:
+Executar na raiz do repositório, usando Bash. A função abaixo usa PostgreSQL no Docker e HTTP, sem Caddy:
 
 ```sh
 dc() {
   docker compose --env-file .env.production \
-    -f docker-compose.production.yml \
-    -f docker-compose.postgres.yml \
-    -f docker-compose.https.yml "$@"
+    -f docker-compose.production.yml "$@"
 }
 ```
 
-Se o banco for externo, remover a linha `-f docker-compose.postgres.yml`. Se já houver proxy HTTPS, remover a linha `-f docker-compose.https.yml`. Recriar essa função ao abrir uma nova sessão. Os comandos a seguir usam essa mesma seleção, inclusive para backup e rollback.
+Para HTTPS futuramente, configurar `APP_DOMAIN` e adicionar `-f docker-compose.https.yml` antes de `"$@"`. Recriar essa função ao abrir uma nova sessão. Os comandos a seguir usam essa mesma seleção, inclusive para backup e rollback.
 
 ## 4. Primeira instalação
 
@@ -77,7 +71,7 @@ dc config --quiet
 dc build --pull
 ```
 
-Se estiver usando PostgreSQL local, iniciar apenas o banco e aguardar ficar saudável:
+Iniciar apenas o banco e aguardar ficar saudável:
 
 ```sh
 dc up -d --wait database
@@ -96,7 +90,7 @@ Remover o valor de `INITIAL_MASTER_PASSWORD` de `.env.production` depois do boot
 dc up -d --no-build --wait
 dc ps
 curl --fail http://127.0.0.1:8080/api/ready
-curl --fail https://SEU_DOMINIO/api/ready
+curl --fail http://IP_DA_EC2:8080/api/ready
 ```
 
 Validar login, calendário, criação/edição de compromissos e atualização direta de `/login`. Se houver falha, consultar `dc logs --tail=100 backend frontend` e, com HTTPS local, `dc logs --tail=100 proxy`.
@@ -123,7 +117,7 @@ umask 077
 dc exec -T database sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "backups/agenda-$(date +%Y%m%d-%H%M%S).dump"
 ```
 
-Conferir o resultado do comando e copiar os backups para armazenamento separado da EC2. Testar a restauração em banco descartável; manter arquivos apenas no disco da instância não protege contra a perda dela. Para RDS, usar snapshot/backup gerenciado e testar restauração.
+Conferir o resultado do comando e copiar os backups para armazenamento separado da EC2. Testar a restauração em banco descartável; manter arquivos apenas no disco da instância não protege contra a perda dela.
 
 O procedimento abaixo tem uma breve janela de indisponibilidade e evita a API atendendo enquanto o schema é alterado:
 
@@ -131,7 +125,7 @@ O procedimento abaixo tem uma breve janela de indisponibilidade e evita a API at
 dc stop frontend backend
 dc run --rm --no-deps backend alembic upgrade head
 dc up -d --no-build --force-recreate --wait
-curl --fail https://SEU_DOMINIO/api/ready
+curl --fail http://IP_DA_EC2:8080/api/ready
 ```
 
 Se a migration falhar, interromper a sequência e analisar os logs antes de subir a aplicação. Não executar deploys em paralelo. O `--force-recreate` também reinicia proxies da composição, evitando upstreams antigos após a troca dos containers; não remove volumes. Repetir o smoke test funcional depois do update.
@@ -171,3 +165,4 @@ A pasta recebida não contém `.git`; não foi possível verificar remoto ou his
 
 - [Security groups da EC2](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-security-groups.html)
 - [HTTPS automático do Caddy](https://caddyserver.com/docs/automatic-https)
+

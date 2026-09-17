@@ -93,7 +93,8 @@ docker compose run --rm frontend npm run build
 
 O `docker-compose.yml` acima e exclusivo de desenvolvimento. Para producao, use
 as imagens com target `production` e o arquivo independente
-`docker-compose.production.yml` em uma EC2, com clone do repositorio e build local.
+`docker-compose.production.yml` em uma EC2,
+com clone do repositorio e build local. O PostgreSQL roda no Docker na mesma instancia.
 
 Consulte [o guia AWS](deploy/aws/README.md) para `git clone`, configuracao do banco,
 HTTPS, primeira instalacao, atualizacoes, migrations, bootstrap e rollback.
@@ -101,7 +102,7 @@ O exemplo de ambiente esta em `.env.production.example`.
 
 Nao exponha PostgreSQL, backend ou Supabase Studio publicamente. Execute migrations
 uma vez por release e crie o administrador com `python -m app.bootstrap` antes de
-iniciar o servico de producao. O frontend atende `/api` pelo mesmo dominio HTTPS.
+iniciar o servico de producao. O frontend atende `/api` pelo mesmo endereco HTTP.
 
 ## Seguranca
 
